@@ -23,6 +23,7 @@ type Listener struct {
 	iface      string
 	ln         net.Listener
 	conns      map[net.Conn]struct{}
+	fsms       map[FSM]struct{}
 	doc        *mar.Document
 	newStreams chan *Stream
 	err        error
@@ -59,6 +60,7 @@ func Listen(doc *mar.Document, iface string) (*Listener, error) {
 		iface:      iface,
 		doc:        doc,
 		conns:      make(map[net.Conn]struct{}),
+		fsms:       make(map[FSM]struct{}),
 		newStreams: make(chan *Stream),
 		closing:    make(chan struct{}),
 	}
@@ -92,6 +94,12 @@ func (l *Listener) Close() error {
 			err = e
 		}
 		delete(l.conns, conn)
+	}
+	for fsm := range l.fsms {
+		if e := fsm.Close(); e != nil && err == nil {
+			err = e
+		}
+		delete(l.fsms, fsm)
 	}
 	l.mu.Unlock()
 
@@ -153,11 +161,14 @@ func (l *Listener) accept() {
 }
 
 func (l *Listener) execute(fsm FSM, conn net.Conn) {
-	l.addConn(conn)
-	defer l.removeConn(conn)
+	defer fsm.StreamSet().Close()
+
+	l.addConn(conn, fsm)
+	defer l.removeConn(conn, fsm)
 
 	for !l.Closed() {
 		if err := fsm.Execute(l.ctx); err == ErrStreamClosed {
+			Logger.Debug("stream closed", zap.String("addr", conn.RemoteAddr().String()))
 			return
 		} else if err == io.EOF {
 			Logger.Debug("client disconnected", zap.String("addr", conn.RemoteAddr().String()))
@@ -175,14 +186,16 @@ func (l *Listener) onNewStream(stream *Stream) {
 	l.newStreams <- stream
 }
 
-func (l *Listener) addConn(conn net.Conn) {
+func (l *Listener) addConn(conn net.Conn, fsm FSM) {
 	l.mu.Lock()
 	l.conns[conn] = struct{}{}
+	l.fsms[fsm] = struct{}{}
 	l.mu.Unlock()
 }
 
-func (l *Listener) removeConn(conn net.Conn) {
+func (l *Listener) removeConn(conn net.Conn, fsm FSM) {
 	l.mu.Lock()
 	delete(l.conns, conn)
+	delete(l.fsms, fsm)
 	l.mu.Unlock()
 }

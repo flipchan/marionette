@@ -235,6 +235,10 @@ func (fsm *fsm) Execute(ctx context.Context) error {
 }
 
 func (fsm *fsm) Next(ctx context.Context) (err error) {
+	if fsm.Closed() {
+		return ErrStreamClosed
+	}
+
 	// Generate a new PRNG once we have an instance ID.
 	if err := fsm.init(); err != nil {
 		return err
